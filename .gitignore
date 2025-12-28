@@ -16,6 +16,10 @@ __pycache__/
 *.log
 bot.log
 
+# Database
+trades.db
+*.db
+
 # IDE
 .idea/
 .vscode/

@@ -6,10 +6,13 @@ Implements position sizing, loss limits, and circuit breakers.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
 
 from config.settings import get_settings
+
+if TYPE_CHECKING:
+    from core.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +73,16 @@ class RiskManager:
     - PnL tracking
     """
     
-    def __init__(self, initial_bankroll: Optional[float] = None):
+    def __init__(self, initial_bankroll: Optional[float] = None, database: Optional['Database'] = None):
         self.settings = get_settings()
-        
+
         # Bankroll
         self._initial_bankroll = initial_bankroll or self.settings.bankroll
         self._current_bankroll = self._initial_bankroll
-        
+
+        # Database persistence
+        self._database = database
+
         # Trade tracking
         self._trade_history: List[TradeRecord] = []
         self._daily_stats: Dict[date, DailyStats] = {}
@@ -89,6 +95,9 @@ class RiskManager:
         # Circuit breaker state
         self._circuit_breaker_active = False
         self._circuit_breaker_reason = ""
+
+        # Load history from database if available
+        self._load_history_from_db()
     
     @property
     def current_bankroll(self) -> float:
@@ -205,7 +214,42 @@ class RiskManager:
             self._total_losses += 1  # Running counter
 
         logger.info(f"Trade closed: {trade.side} {trade.market} | PnL: ${trade.pnl:.2f}")
-    
+
+        # Persist to database
+        if self._database:
+            try:
+                self._database.save_trade(trade)
+            except Exception as e:
+                logger.error(f"Failed to persist trade: {e}")
+
+    def _load_history_from_db(self):
+        """Load trade history from database on startup."""
+        if not self._database:
+            return
+
+        try:
+            # Load today's stats from database
+            db_stats = self._database.get_daily_stats()
+            if db_stats:
+                today = date.today()
+                self._daily_stats[today] = DailyStats(
+                    date=today,
+                    trades=db_stats['trades'],
+                    wins=db_stats['wins'],
+                    losses=db_stats['losses'],
+                    gross_profit=db_stats['gross_profit'],
+                    gross_loss=db_stats['gross_loss']
+                )
+
+            # Load all-time stats
+            all_time = self._database.get_all_time_stats()
+            self._total_wins = all_time['wins']
+            self._total_losses = all_time['losses']
+
+            logger.info(f"Loaded history: {all_time['total_trades']} trades, ${all_time['net_pnl']:.2f} PnL")
+        except Exception as e:
+            logger.error(f"Failed to load history from database: {e}")
+
     def assess_risk_level(self) -> RiskLevel:
         """
         Assess current risk level based on performance.

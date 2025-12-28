@@ -555,8 +555,8 @@ class FrontrunBotApp(ctk.CTk):
                 try:
                     stats = self.bot.get_stats()
                     self._on_stats_update(stats)
-                except:
-                    pass
+                except Exception as e:
+                    logging.debug(f"Stats update error: {e}")
             self.after(1000, update)
 
         self.after(1000, update)

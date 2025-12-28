@@ -15,8 +15,10 @@ from config.settings import get_settings
 from .scanner import MarketScanner, MarketInfo
 
 # Constants for magic numbers
-BAIT_SPREAD_OFFSET = 0.02  # Offset from mid for bait orders
-FRONTRUN_PRICE_OFFSET = 0.01  # Price improvement for frontrun
+BAIT_SPREAD_PERCENT = 0.25  # 25% of spread for bait offset
+BAIT_MAX_OFFSET = 0.05  # Max $0.05 bait offset
+FRONTRUN_SPREAD_PERCENT = 0.10  # 10% of spread for frontrun offset
+FRONTRUN_MAX_OFFSET = 0.02  # Max $0.02 frontrun offset
 COOLDOWN_NO_MARKET = 5  # Seconds to wait when no market found
 COOLDOWN_AFTER_TRADE = 2  # Seconds to wait after trade
 SORTED_CACHE_TTL = 5.0  # Seconds to cache sorted markets
@@ -125,7 +127,15 @@ class FrontrunStrategy:
         logger.info(f"Strategy state: {new_state.value}")
         if self._on_state_change:
             self._on_state_change(new_state.value)
-    
+
+    def _calculate_bait_offset(self, spread: float) -> float:
+        """Calculate dynamic bait offset based on spread (25% of spread, max $0.05)."""
+        return min(spread * BAIT_SPREAD_PERCENT, BAIT_MAX_OFFSET)
+
+    def _calculate_frontrun_offset(self, spread: float) -> float:
+        """Calculate dynamic frontrun offset based on spread (10% of spread, max $0.02)."""
+        return min(spread * FRONTRUN_SPREAD_PERCENT, FRONTRUN_MAX_OFFSET)
+
     async def find_target(self) -> Optional[MarketInfo]:
         """Find best market to target. Uses cached sorted results."""
         self._set_state(StrategyState.SCANNING)
@@ -163,12 +173,13 @@ class FrontrunStrategy:
             return None
         
         self._set_state(StrategyState.BAITING)
-        
+
         settings = self.settings
         mid_price = (market.best_bid + market.best_ask) / 2
 
-        # Tighten spread using constant offset
-        bait_price = round(mid_price - BAIT_SPREAD_OFFSET, 3)  # Slightly below mid for buy
+        # Dynamic bait offset: 25% of spread, max $0.05
+        bait_offset = self._calculate_bait_offset(market.spread)
+        bait_price = round(mid_price - bait_offset, 3)  # Slightly below mid for buy
         
         try:
             order_id = await self.executor.place_limit_order(
@@ -218,14 +229,17 @@ class FrontrunStrategy:
             return None
         
         # Determine our frontrun side (opposite of counter)
+        # Dynamic frontrun offset: 10% of spread, max $0.02
+        frontrun_offset = self._calculate_frontrun_offset(market.spread)
+
         if counter['side'] == 'BID':
             # Someone is buying, we should buy first (then sell to them)
             our_side = 'BUY'
-            entry_price = counter['price'] - FRONTRUN_PRICE_OFFSET  # Slightly better price
+            entry_price = counter['price'] - frontrun_offset  # Slightly better price
         else:
             # Someone is selling, we should sell first
             our_side = 'SELL'
-            entry_price = counter['price'] + FRONTRUN_PRICE_OFFSET
+            entry_price = counter['price'] + frontrun_offset
         
         # Estimate profit (simplified)
         spread_capture = abs(counter['price'] - entry_price)

@@ -98,7 +98,21 @@ class Settings(BaseSettings):
         le=5.0,
         description="Max time for counter-order detection (seconds)"
     )
-    
+
+    # WebSocket Settings
+    websocket_enabled: bool = Field(
+        default=True,
+        description="Use WebSocket for real-time updates (faster)"
+    )
+    ws_market_url: str = Field(
+        default="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        description="WebSocket market endpoint"
+    )
+    ws_user_url: str = Field(
+        default="wss://ws-subscriptions-clob.polymarket.com/ws/user",
+        description="WebSocket user endpoint"
+    )
+
     # Logging
     log_level: str = Field(
         default="INFO",

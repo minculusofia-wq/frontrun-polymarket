@@ -18,6 +18,8 @@ from core.scanner import MarketScanner
 from core.strategy import FrontrunStrategy
 from core.executor import OrderExecutor
 from core.risk import RiskManager, TradeRecord
+from core.database import Database
+from core.websocket import WebSocketManager
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,9 @@ class FrontrunBot:
         self.strategy: Optional[FrontrunStrategy] = None
         self.executor: Optional[OrderExecutor] = None
         self.risk_manager: Optional[RiskManager] = None
-        
+        self.database: Optional[Database] = None
+        self.websocket: Optional[WebSocketManager] = None
+
         # Runtime
         self._running = False
         self._main_task: Optional[asyncio.Task] = None
@@ -140,9 +144,17 @@ class FrontrunBot:
     
     def _initialize_components(self):
         """Initialize all bot components."""
-        self.scanner = MarketScanner(self.client)
+        # Initialize database first for persistence
+        self.database = Database(db_path="trades.db")
+
+        # Initialize WebSocket for real-time updates
+        if self.settings.websocket_enabled:
+            self.websocket = WebSocketManager()
+            self._log("INFO", "WebSocket manager initialized")
+
+        self.scanner = MarketScanner(self.client, websocket=self.websocket)
         self.executor = OrderExecutor(self.client)
-        self.risk_manager = RiskManager(self.settings.bankroll)
+        self.risk_manager = RiskManager(self.settings.bankroll, database=self.database)
         self.strategy = FrontrunStrategy(self.scanner, self.executor)
         
         # Wire up callbacks
@@ -237,12 +249,23 @@ class FrontrunBot:
         
         # Initialize components
         self._initialize_components()
-        
+
+        # Connect WebSocket for real-time updates
+        if self.websocket:
+            try:
+                connected = await self.websocket.connect()
+                if connected:
+                    self._log("INFO", "WebSocket connected - real-time mode (<50ms)")
+                else:
+                    self._log("WARNING", "WebSocket failed - using REST polling fallback")
+            except Exception as e:
+                self._log("WARNING", f"WebSocket connection error: {e} - using REST fallback")
+
         # Start main loop
         self._running = True
         self.start_time = datetime.now()
         self._main_task = asyncio.create_task(self._main_loop())
-        
+
         self._set_state(BotState.RUNNING)
         return True
     
@@ -269,7 +292,12 @@ class FrontrunBot:
                 await self._main_task
             except asyncio.CancelledError:
                 pass
-        
+
+        # Disconnect WebSocket
+        if self.websocket:
+            await self.websocket.disconnect()
+            self._log("INFO", "WebSocket disconnected")
+
         self._set_state(BotState.STOPPED)
         self._log("INFO", "Bot stopped")
     
@@ -290,7 +318,13 @@ class FrontrunBot:
         
         if self.executor:
             stats['executor'] = self.executor.get_stats()
-        
+
+        if self.websocket:
+            stats['websocket'] = self.websocket.get_stats()
+
+        if self.scanner:
+            stats['cache'] = self.scanner.get_cache_stats()
+
         return stats
     
     def get_cached_markets(self):
